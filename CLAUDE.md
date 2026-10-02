@@ -9,26 +9,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用指令
 
 ```shell
-npm install                       # 目前沒有任何依賴（使用 Node 原生 fetch，需 Node >= 18）
 cp config_default.json config.json  # 然後填入 username、csrftoken、LEETCODE_SESSION
-npm start                         # 等同 node index.js
+npm start                           # 增量模式：已有解答檔的題目直接跳過
+npm start -- --full                 # 完整重抓所有題目
 ```
 
+- 零依賴（使用 Node 原生 `fetch`），需要 Node >= 18，不需要 `npm install`。
 - 沒有測試、lint 或 build 設定（`npm test` 只是佔位指令）。
 - 必須在專案根目錄執行，因為 `config.json`、`query/`、`template/` 都以相對路徑（`./`）讀取。
 - `config.json` 與 `result/` 已被 `.gitignore` 排除（`config.json` 含登入 cookie，勿提交）。
-- 除錯時可啟用 `index.js` 迴圈尾端被註解的 `//break; //for test`，只處理第一題。
+- 要快速測試，可暫時複製一份 `index.js`，在 `problems` 後面加 `.filter(...)` 只處理少數題目；完整爬取上千題會很久。
 
 ## 架構
 
-所有邏輯都在 [index.js](index.js) 的 `main()`，流程如下：
+所有邏輯都在 [index.js](index.js)：`main()` 負責取得資料與組合 ReadMe，`process_problem()` 負責單一題目。
 
 1. 讀取 `config.json`，以及 `query/*.graphql` 四個查詢檔（user、problem、submission、submissionDetail）。
-2. `fetch_leetcode(query, variables)` 為唯一的 API 封裝，以 `csrftoken` 與 `LEETCODE_SESSION` cookie 向 `https://leetcode.com/graphql` 發送 POST。
-3. `user.graphql` 取得各難度的「已解／總題數」，寫入 `config.cur_*` / `config.all_*`（陣列順序依賴 `configVars = solved, easy, medium, hard`），用來填 header 模板，同時 `config.cur_solved` 也作為 problem 查詢的 `limit`。
-4. `problem.graphql` 以 `filters: { status: "AC" }` 取得所有已解題目；對每題再用 `submission.graphql` 取最近 20 筆提交並篩出 `Accepted`，每種語言取第一筆，再以 `submissionDetail.graphql` 取得程式碼（回傳 `null` 時會無限重試迴圈，直到成功）。
-5. 程式碼寫入 `result/ProblemSet/<4位補零題號>.<titleSlug>/<titleSlug>.<副檔名>`，並在表格列中加入對應連結。
-6. 最後把 header + 所有題目列組合寫入 `result/ReadMe.md`。
+2. `fetch_leetcode(query, variables)` 為唯一的 API 封裝，以 `csrftoken` 與 `LEETCODE_SESSION` cookie 向 `https://leetcode.com/graphql` 發送 POST；HTTP 非 2xx 時最多重試 `MAX_RETRIES` 次（線性退避）。每次呼叫前都會經過全域節流 `throttle()`，請求開始時間至少間隔 `REQUEST_INTERVAL_MS`。
+
+   **限流的坑**：請求太密時 LeetCode 不會回 429，而是對 `submissionDetails` 回 HTTP 200 加 `{"data":{"submissionDetails":null}}`，看起來像「這筆提交取不到」，但稍後單獨請求就取得到。曾以 `REQUEST_INTERVAL_MS = 300`、`CONCURRENCY = 4` 跑，約每 100 題有 10 題以上失敗；目前的 `500`／`3` 完整跑 1474 題零失敗。若又出現大量 `failed to fetch the code of submission`，先調大間隔，不要當成提交本身壞掉。
+3. `user.graphql` 取得各難度的「已解／總題數」，寫入 `config.cur_*` / `config.all_*`（陣列順序依賴 `configVars = solved, easy, medium, hard`），填入 header 模板。
+4. `problem.graphql` 以 `filters: { status: "AC" }` 取得所有已解題目。伺服器單次最多回 100 筆，所以用 `skip` 分頁；**頁與頁之間會重疊**，因此依 `questionId` 去重，並以「空頁」而非筆數判斷結束。
+5. 最多 `CONCURRENCY` 題同時由 `process_problem()` 處理（簡易 worker pool），結果依原順序放入 `rows`，最後組成 `result/ReadMe.md`。
+6. `process_problem()`：
+   - **增量**：若 `result/ProblemSet/<4位補零題號>.<titleSlug>/` 已有解答檔就直接用檔案推回連結、不打 API（`--full` 則忽略）。副作用：已抓過的題目之後新增的語言或較新的提交不會被補上，需用 `--full`。
+   - 否則用 `submission.graphql` 分頁（`hasNext`/`lastKey`）翻完所有提交，**每種語言只保留最新一筆 Accepted**（提交由新到舊排序，所以第一次看到就是最新）。再用 `submissionDetail.graphql` 取得程式碼（`fetch_code` 回傳 `null` 時重試，超過上限就丟錯）。
+   - 任何錯誤會被捕捉、記入 `failed`，並刪除該題資料夾，使下一次增量執行會重抓。
 
 ### 模板機制
 
@@ -36,7 +42,7 @@ npm start                         # 等同 node index.js
 
 ### 語言對照表
 
-`languages` 物件決定支援哪些語言及副檔名。注意：部分語言（swift、golang、scala、rust、racket、erlang、elixir）目前僅為字串而非 `{ name, extension }` 物件，因此取 `.extension` 會得到 `undefined`；要支援它們需先改成物件格式。
+`languages` 物件（key 為 LeetCode 的 `lang` 值）決定顯示名稱、副檔名與連結順序。不在表內的語言仍會被抓，存為 `<lang>.txt`。SQL 方言的副檔名刻意用 `mysql.sql`、`mssql.sql` 等，避免同一題多種方言互相覆蓋。增量模式靠副檔名反查語言，所以**新增或修改副檔名會影響既有資料夾的辨識**。
 
 ### 已棄用程式碼
 
