@@ -17,6 +17,3 @@
 :heart: The source code is fetched using the tool [LeetCode ReadMe Generator](https://github.com/m21248074/LeetCode_Readme_Generator)
 
 <hr/>
-
-| ID | Title | Acceptance | Difficulty | Tags | Answers |
-|:--:|:------|:----------:|:----------:|:----:|:-------:|

@@ -4,6 +4,10 @@ const LEETCODE_API_ENDPOINT = "https://leetcode.com/graphql";
 const PROBLEM_PAGE_SIZE = 100;
 const SUBMISSION_PAGE_SIZE = 20;
 const CONCURRENCY = 3;
+// Problems are split into one page per PAGE_SIZE problem ids, because GitHub truncates a ReadMe over ~500 KiB.
+const PAGE_SIZE = 500;
+// Solution links are written relative to a marker, because the first page is the ReadMe at the root and the others are in ProblemList/.
+const ROOT = "@@ROOT@@";
 const MAX_RETRIES = 5;
 // Bursts make LeetCode answer submissionDetails with null, so space out request starts globally.
 const REQUEST_INTERVAL_MS = 500;
@@ -221,6 +225,7 @@ async function main() {
   for (let v of headerVars)
     header = header.replace(`{{ ${v} }}`, config[v]);
 
+  const pageHeader = await fs.readFile("./template/page_header.md", { encoding: "utf8" });
   const body = await fs.readFile("./template/body.md", { encoding: "utf8" });
 
   // LeetCode caps each response at 100 questions, so page through with skip.
@@ -256,9 +261,46 @@ async function main() {
   // datetime
   header = header.replace(`{{ date }}`, (new Date()).toLocaleString('en-US'));
 
+  // Group rows into pages by problem id, so adding a problem only touches one page.
+  const pages = new Map();
+  for (const r of rows) {
+    const page = Math.floor((r.id - 1) / PAGE_SIZE);
+    if (!pages.has(page))
+      pages.set(page, []);
+    pages.get(page).push(r);
+  }
+  const pageNumbers = [...pages.keys()].sort((x, y) => x - y);
+  const rangeOf = page => `${String(page * PAGE_SIZE + 1).padStart(4, "0")}-${String((page + 1) * PAGE_SIZE).padStart(4, "0")}`;
+  // The first page is the ReadMe itself, the others live in ProblemList/.
+  const pathOf = (page, from) => {
+    const fromRoot = from == pageNumbers[0];
+    if (page == pageNumbers[0])
+      return fromRoot ? "ReadMe.md" : "../ReadMe.md";
+    return `${fromRoot ? "ProblemList/" : ""}${rangeOf(page)}.md`;
+  };
+
   await fs.mkdir("./result", { recursive: true });
-  await fs.writeFile("./result/ReadMe.md", `${header}${rows.map(r => `
-${r}`).join("")}`);
+  await fs.rm("./result/ProblemList", { recursive: true, force: true });
+  await fs.mkdir("./result/ProblemList", { recursive: true });
+
+  for (const [n, page] of pageNumbers.entries()) {
+    const isFirst = n == 0;
+    const root = isFirst ? "" : "../";
+    const list = pages.get(page).sort((x, y) => x.id - y.id);
+
+    const links = pageNumbers.map(q => q == page ? `**${rangeOf(q)}**` : `[${rangeOf(q)}](${pathOf(q, page)})`);
+    const prev = n > 0 ? `[« Prev](${pathOf(pageNumbers[n - 1], page)})  ` : "";
+    const nextLink = n < pageNumbers.length - 1 ? `  [Next »](${pathOf(pageNumbers[n + 1], page)})` : "";
+    const pager = `\n\n<div align="center">\n\n${prev}${links.join(" · ")}${nextLink}\n\n</div>\n`;
+
+    const table = `${pageHeader.replace("{{ range }}", rangeOf(page))}${list.map(r => `\n${r.row}`).join("")}${pager}`.replaceAll(ROOT, root);
+    if (isFirst)
+      await fs.writeFile("./result/ReadMe.md", `${header}\n${table}`);
+    else
+      await fs.writeFile(`./result/ProblemList/${rangeOf(page)}.md`, table);
+  }
+  if (pageNumbers.length == 0)
+    await fs.writeFile("./result/ReadMe.md", header);
 }
 
 async function process_problem(p, body, { submissionQuery, submissionDetailQuery }, failed) {
@@ -273,7 +315,7 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
 
   const id = `${problemObject.id}`.padStart(4, "0");
   const dir = `./result/ProblemSet/${id}.${p.titleSlug}/`;
-  const link = ({ name, extension }) => `[${name}](ProblemSet/${id}.${p.titleSlug}/${p.titleSlug}.${extension})`;
+  const link = ({ name, extension }) => `[${name}](${ROOT}ProblemSet/${id}.${p.titleSlug}/${p.titleSlug}.${extension})`;
   let answers = [];
 
   try {
@@ -317,6 +359,6 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
   let bodyCopy = body;
   for (let v of bodyVars)
     bodyCopy = bodyCopy.replaceAll(`{{ ${v} }}`, problemObject[v]);
-  return bodyCopy;
+  return { id: parseInt(problemObject.id), row: bodyCopy };
 }
 main();
