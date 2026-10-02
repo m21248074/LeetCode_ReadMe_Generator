@@ -65,6 +65,7 @@ npm start
 
 - The first run crawls everything and can take a long time (requests are throttled to avoid being rate limited).
 - Later runs are incremental: problems whose folder already has solutions are skipped. A new submission or a new language of a problem that was already crawled is **not** picked up this way; run `npm start -- --full` to crawl every problem again (or delete that problem's folder).
+- `npm start -- --recent` is incremental and additionally re-crawls your latest accepted submissions, so a new language or a newer solution of an already crawled problem is picked up. LeetCode only reports the most recent 20 accepted submissions, so run it regularly (it is cheap) or fall back to `--full`.
 - If some problems fail, they are listed at the end and are retried by the next run.
 
 ### Step 4. Push the result to Your Repo

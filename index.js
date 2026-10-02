@@ -14,6 +14,10 @@ const MAX_RETRIES = 5;
 const REQUEST_INTERVAL_MS = 500;
 // By default problems whose output folder already has solutions are skipped; pass --full to re-crawl everything.
 const FULL = process.argv.includes("--full");
+// --recent also re-crawls the latest accepted submissions of the profile, which picks up new languages and newer solutions of problems that were already crawled.
+const RECENT = process.argv.includes("--recent");
+// LeetCode returns at most 20 recent accepted submissions, however large the limit is.
+const RECENT_AC_LIMIT = 20;
 const LEETCODE_API_SUBMISSION = "https://leetcode.com/submissions/latest/";
 
 const configVars = [
@@ -142,6 +146,8 @@ const languages = {
 let config;
 // Where ReadMe.md, ProblemList/ and ProblemSet/ are written; set by config.outputDir (e.g. a clone of your solution repo).
 let outputDir = "./result";
+// problem slug -> (language -> latest recent accepted submission); only filled with --recent.
+let recentAc = new Map();
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -209,6 +215,26 @@ async function read_existing_answers(dir, slug) {
 //   return json.code;
 // }
 
+function language_of(lang, langName) {
+  return languages[lang] ?? { name: langName ?? lang, extension: `${lang}.txt` };
+}
+
+async function fetch_recent_ac(query) {
+  const list = (await fetch_leetcode(query, { username: config.username, limit: RECENT_AC_LIMIT })).data.recentAcSubmissionList;
+  if (!list)
+    throw new Error("LeetCode returned no recent accepted submissions.");
+  const bySlug = new Map();
+  // Newest first, so the first submission seen per problem and language is the latest.
+  for (const s of list) {
+    if (!bySlug.has(s.titleSlug))
+      bySlug.set(s.titleSlug, new Map());
+    const languagesOfProblem = bySlug.get(s.titleSlug);
+    if (!languagesOfProblem.has(s.lang))
+      languagesOfProblem.set(s.lang, s);
+  }
+  return bySlug;
+}
+
 async function main() {
   config = JSON.parse(await fs.readFile("./config.json", { encoding: "utf8" }));
   outputDir = config.outputDir || outputDir;
@@ -220,6 +246,7 @@ async function main() {
   const problemQuery = await fs.readFile("./query/problem.graphql", { encoding: "utf8" });
   const submissionQuery = await fs.readFile("./query/submission.graphql", { encoding: "utf8" });
   const submissionDetailQuery = await fs.readFile("./query/submissionDetail.graphql", { encoding: "utf8" });
+  const recentAcQuery = await fs.readFile("./query/recentAc.graphql", { encoding: "utf8" });
 
   const user = (await fetch_leetcode(userQuery, { username: config.username })).data;
   if (!user.matchedUser)
@@ -252,6 +279,11 @@ async function main() {
     throw new Error("Could not list your solved problems. csrftoken / LEETCODE_SESSION in config.json are probably expired, copy fresh values from the leetcode.com cookies in your browser. Nothing was written.");
   if (problems.length != config.cur_solved)
     console.warn(`Warning: expected ${config.cur_solved} problems but fetched ${problems.length}`);
+
+  if (RECENT && !FULL) {
+    recentAc = await fetch_recent_ac(recentAcQuery);
+    console.log(`Recent AC: ${[...recentAc.values()].reduce((n, m) => n + m.size, 0)} language(s) in ${recentAc.size} problem(s) to refresh`);
+  }
 
   const queries = { submissionQuery, submissionDetailQuery };
   const rows = new Array(problems.length);
@@ -333,7 +365,19 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
   try {
     const existing = FULL ? null : await read_existing_answers(dir, p.titleSlug);
     if (existing) {
-      answers = existing.map(link);
+      const refresh = recentAc.get(p.titleSlug);
+      if (refresh) {
+        for (const [l, submission] of refresh) {
+          const language = language_of(l, submission.langName);
+          const code = await fetch_code(submissionDetailQuery, submission.id);
+          await fs.writeFile(`${dir}/${p.titleSlug}.${language.extension}`, code);
+        }
+        console.log(`Refreshed ${p.titleSlug}: ${[...refresh.keys()].join(", ")}`);
+        // A refreshed language may be a new one, so list the folder again.
+        answers = ((await read_existing_answers(dir, p.titleSlug)) ?? []).map(link);
+      } else {
+        answers = existing.map(link);
+      }
     } else {
       // Submissions come newest first, so the first Accepted one seen per language is the latest.
       const latest = new Map();
@@ -354,7 +398,7 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
       const langOrder = [...Object.keys(languages).filter(l => latest.has(l)), ...[...latest.keys()].filter(l => !(l in languages))];
       for (let l of langOrder) {
         const submission = latest.get(l);
-        const language = languages[l] ?? { name: submission.langName ?? l, extension: `${l}.txt` };
+        const language = language_of(l, submission.langName);
         const code = await fetch_code(submissionDetailQuery, submission.id);
         await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(`${dir}/${p.titleSlug}.${language.extension}`, code);

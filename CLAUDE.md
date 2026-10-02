@@ -12,6 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cp config_default.json config.json  # 然後填入 username、csrftoken、LEETCODE_SESSION
 npm start                           # 增量模式：已有解答檔的題目直接跳過
 npm start -- --full                 # 完整重抓所有題目
+npm start -- --recent               # 增量 + 重抓最近 20 筆 AC（補新語言／較新的解法）
 ```
 
 - 零依賴（使用 Node 原生 `fetch`），需要 Node >= 18，不需要 `npm install`。
@@ -35,6 +36,7 @@ npm start -- --full                 # 完整重抓所有題目
 5. 最多 `CONCURRENCY` 題同時由 `process_problem()` 處理（簡易 worker pool），每題回傳 `{ id, row }`，最後依題號每 `PAGE_SIZE`（500）題分頁：**第一頁直接是 `result/ReadMe.md`**（徽章 + 第一頁表格），其餘頁面寫入 `result/ProblemList/0501-1000.md` 等，每頁底部都有分頁器（range 連結 + Prev/Next）。分頁的原因是 GitHub 對過大的 README（約 500 KiB）會截斷，單一 ReadMe 在 1474 題時已達約 630 KiB。每次執行會先清空並重建 `ProblemList/`。
 6. `process_problem()`：
    - **增量**：若 `result/ProblemSet/<4位補零題號>.<titleSlug>/` 已有解答檔就直接用檔案推回連結、不打 API（`--full` 則忽略）。副作用：已抓過的題目之後新增的語言或較新的提交不會被補上，需用 `--full`。
+   - **`--recent`**：`fetch_recent_ac()` 用 `recentAc.graphql`（`recentAcSubmissionList`）取最近的 AC，依「題目＋語言」留最新一筆，存在 `recentAc`。對已有資料夾的題目，直接用該提交 `id` 取程式碼並覆寫／新增該語言的檔案（不必翻提交分頁），再重新列出資料夾來更新連結。這個查詢**最多只回 20 筆**（limit 設再大也一樣），所以只能補「最近解的」，不能當完整資料來源；不需 cookie 就能查，但取程式碼仍需要。`--full` 時忽略它。沒有加旗標時 `recentAc` 是空的，行為與原本完全相同。
    - 否則用 `submission.graphql` 分頁（`hasNext`/`lastKey`）翻完所有提交，**每種語言只保留最新一筆 Accepted**（提交由新到舊排序，所以第一次看到就是最新）。再用 `submissionDetail.graphql` 取得程式碼（`fetch_code` 回傳 `null` 時重試，超過上限就丟錯）。
    - 任何錯誤會被捕捉並記入 `failed`。若資料夾是這次嘗試才建立的就刪除它，使下一次增量執行會重抓；**本來就存在的資料夾絕不刪除**（`--full` 時失敗仍保留舊內容與舊連結）。
 
