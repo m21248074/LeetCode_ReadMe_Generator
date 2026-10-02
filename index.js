@@ -1,4 +1,3 @@
-import fetch from "node-fetch";
 import * as fs from "node:fs/promises";
 
 const LEETCODE_API_ENDPOINT = "https://leetcode.com/graphql";
