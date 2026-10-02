@@ -1,8 +1,8 @@
 # LeetCode ReadMe Generator
 
-<p> 
+<p>
 	<img src="https://badgen.net/badge/Coder/m21248074/red?icon=github" />
-	<img src="https://badgen.net/badge/Node.js/16.16.0/green?" />
+	<img src="https://badgen.net/badge/Node.js/24.18.0/green?" />
 </p>
 
 Which Programmer😁 doesn't want to download the code written in LeetCode with one click, and also generate a beautiful ReadMe file?
@@ -25,8 +25,8 @@ This project is inspired by:
 ### Step 1. Clone the repository and Initialize Node.js
 
 ```shell
-git clone git@github.com:m21248074/LeetCode_Solution.git
-cd ./LeetCode_Solution
+git clone https://github.com/m21248074/LeetCode_ReadMe_Generator.git
+cd ./LeetCode_ReadMe_Generator
 npm install
 ```
 
@@ -72,4 +72,4 @@ The above commands are only needed at the first time, next time you can directly
 
 ## Result
 
-You can see the result for crawling in my repository：[LeetCode Solution](https://github.com/m21248074/LeetCode_Solution). 
+You can see the result for crawling in my repository：[LeetCode Solution](https://github.com/m21248074/LeetCode_Solution).
