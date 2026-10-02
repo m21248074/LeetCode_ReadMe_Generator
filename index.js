@@ -1,6 +1,14 @@
 import * as fs from "node:fs/promises";
 
 const LEETCODE_API_ENDPOINT = "https://leetcode.com/graphql";
+const PROBLEM_PAGE_SIZE = 100;
+const SUBMISSION_PAGE_SIZE = 20;
+const CONCURRENCY = 3;
+const MAX_RETRIES = 5;
+// Bursts make LeetCode answer submissionDetails with null, so space out request starts globally.
+const REQUEST_INTERVAL_MS = 500;
+// By default problems whose result folder already has solutions are skipped; pass --full to re-crawl everything.
+const FULL = process.argv.includes("--full");
 const LEETCODE_API_SUBMISSION = "https://leetcode.com/submissions/latest/";
 
 const configVars = [
@@ -56,14 +64,26 @@ const languages = {
     "name": "Ruby",
     "extension": "rb"
   },
-  "swift": "Swift",
-  "golang": "Go",
-  "scala": "Scala",
+  "swift": {
+    "name": "Swift",
+    "extension": "swift"
+  },
+  "golang": {
+    "name": "Go",
+    "extension": "go"
+  },
+  "scala": {
+    "name": "Scala",
+    "extension": "scala"
+  },
   "kotlin": {
     "name": "Kotlin",
     "extension": "kt"
   },
-  "rust": "Rust",
+  "rust": {
+    "name": "Rust",
+    "extension": "rs"
+  },
   "php": {
     "name": "PHP",
     "extension": "php"
@@ -72,24 +92,102 @@ const languages = {
     "name": "TypeScript",
     "extension": "ts"
   },
-  "racket": "Racket",
-  "erlang": "Erlang",
-  "elixir": "Elixir"
+  "racket": {
+    "name": "Racket",
+    "extension": "rkt"
+  },
+  "erlang": {
+    "name": "Erlang",
+    "extension": "erl"
+  },
+  "elixir": {
+    "name": "Elixir",
+    "extension": "ex"
+  },
+  "dart": {
+    "name": "Dart",
+    "extension": "dart"
+  },
+  "bash": {
+    "name": "Bash",
+    "extension": "sh"
+  },
+  "mysql": {
+    "name": "MySQL",
+    "extension": "mysql.sql"
+  },
+  "mssql": {
+    "name": "MS SQL Server",
+    "extension": "mssql.sql"
+  },
+  "oraclesql": {
+    "name": "Oracle",
+    "extension": "oraclesql.sql"
+  },
+  "postgresql": {
+    "name": "PostgreSQL",
+    "extension": "postgresql.sql"
+  },
+  "pythondata": {
+    "name": "Pandas",
+    "extension": "pythondata.py"
+  }
 }
 
 let config;
 
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+let nextRequestAt = 0;
+async function throttle() {
+  const wait = nextRequestAt - Date.now();
+  nextRequestAt = Math.max(nextRequestAt, Date.now()) + REQUEST_INTERVAL_MS;
+  if (wait > 0)
+    await sleep(wait);
+}
+
 async function fetch_leetcode(query, variables) {
-  const response = await fetch(LEETCODE_API_ENDPOINT, {
-    method: "post",
-    headers: {
-      'Content-Type': 'application/json',
-      cookie: `csrftoken=${config.csrftoken}; LEETCODE_SESSION=${config['LEETCODE_SESSION']}`
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const data = await response.json();
-  return data;
+  for (let attempt = 1; ; attempt++) {
+    await throttle();
+    const response = await fetch(LEETCODE_API_ENDPOINT, {
+      method: "post",
+      headers: {
+        'Content-Type': 'application/json',
+        cookie: `csrftoken=${config.csrftoken}; LEETCODE_SESSION=${config['LEETCODE_SESSION']}`
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (response.ok)
+      return await response.json();
+    if (attempt >= MAX_RETRIES)
+      throw new Error(`LeetCode API responded with ${response.status}`);
+    await sleep(1000 * attempt);
+  }
+}
+
+async function fetch_code(query, submissionId) {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const result = await fetch_leetcode(query, { submissionId });
+    if (result.data?.submissionDetails)
+      return result.data.submissionDetails.code;
+    await sleep(2000 * attempt);
+  }
+  throw new Error(`failed to fetch the code of submission ${submissionId}`);
+}
+
+// Rebuild the answer list of an already crawled problem from the files in its folder.
+async function read_existing_answers(dir, slug) {
+  let files;
+  try {
+    files = await fs.readdir(dir);
+  } catch {
+    return null;
+  }
+  const prefix = `${slug}.`;
+  const known = Object.values(languages).filter(l => files.includes(`${prefix}${l.extension}`));
+  const unknown = files.filter(f => f.startsWith(prefix) && f.endsWith(".txt")).map(f => f.slice(prefix.length, -4)).map(l => ({ name: l, extension: `${l}.txt` }));
+  const found = [...known, ...unknown];
+  return found.length ? found : null;
 }
 
 // async function fetch_leetcode_submission(qid, lang) {
@@ -125,56 +223,100 @@ async function main() {
 
   const body = await fs.readFile("./template/body.md", { encoding: "utf8" });
 
-  const problems = (await fetch_leetcode(problemQuery, { categorySlug: "", skip: 0, limit: config.cur_solved, filters: { status: "AC" } })).data.problemsetQuestionList.questions;
-
-  let bodyResult = "";
-  for (let p of problems) {
-    let problemObject = {
-      id: p.frontendQuestionId,
-      title: p.title,
-      url: `https://leetcode.com/problems/${p.titleSlug}`,
-      acRate: p.acRate.toFixed(1),
-      difficulty: `<img src="https://img.shields.io/badge/${difficulty[p.difficulty]}" />`,
-    }
-    let tags = [];
-    for (let tag of p.topicTags)
-      tags.push(`[${tag.name}](https://leetcode.com/tag/${tag.slug})`);
-    problemObject.tags = tags.join(" &#124; ");
-
-    let answers = [];
-    const submissions = (await fetch_leetcode(submissionQuery, { offset: 0, limit: 20, lastKey: null, questionSlug: p.titleSlug })).data.submissionList.submissions.filter(s => s.statusDisplay == "Accepted");
-
-    const lang = new Set();
-    for (let s of submissions)
-      lang.add(s.lang);
-    for (let l in languages) {
-      if (lang.has(l)) {
-        let submission = submissions.find(s => s.lang == l);
-        let code = "";
-        do {
-          code = await fetch_leetcode(submissionDetailQuery, { submissionId: submission.id });
-        } while (code.data.submissionDetails == null);
-        code = code.data.submissionDetails.code;
-        let id = `${problemObject.id}`.padStart(4, "0");
-        const dir = `./result/ProblemSet/${id}.${p.titleSlug}/`;
-        await fs.mkdir(dir, { recursive: true });
-        await fs.writeFile(`${dir}/${p.titleSlug}.${languages[l].extension}`, code);
-        answers.push(`[${languages[l].name}](ProblemSet/${id}.${p.titleSlug}/${p.titleSlug}.${languages[l].extension})`);
-      }
-    }
-    problemObject.answers = answers.join(" &#124; ");
-
-    let bodyCopy = body;
-    for (let v of bodyVars)
-      bodyCopy = bodyCopy.replaceAll(`{{ ${v} }}`, problemObject[v]);
-    bodyResult += `\n${bodyCopy}`;
-    console.log(`Progress: ${problems.indexOf(p) + 1}/${problems.length}`);
-    //break; //for test
+  // LeetCode caps each response at 100 questions, so page through with skip.
+  // Pages can overlap, so de-duplicate by questionId and stop at the first empty page.
+  const problemMap = new Map();
+  for (let skip = 0; ; skip += PROBLEM_PAGE_SIZE) {
+    const page = (await fetch_leetcode(problemQuery, { categorySlug: "", skip, limit: PROBLEM_PAGE_SIZE, filters: { status: "AC" } })).data.problemsetQuestionList.questions;
+    if (page.length == 0)
+      break;
+    for (const p of page)
+      problemMap.set(p.questionId, p);
   }
+  const problems = [...problemMap.values()];
+  if (problems.length != config.cur_solved)
+    console.warn(`Warning: expected ${config.cur_solved} problems but fetched ${problems.length}`);
+
+  const queries = { submissionQuery, submissionDetailQuery };
+  const rows = new Array(problems.length);
+  const failed = [];
+  let next = 0, done = 0;
+  async function worker() {
+    while (next < problems.length) {
+      const i = next++;
+      rows[i] = await process_problem(problems[i], body, queries, failed);
+      console.log(`Progress: ${++done}/${problems.length}`);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, problems.length) }, worker));
+
+  if (failed.length)
+    console.warn(`Failed (will be retried on the next run): ${failed.join(", ")}`);
 
   // datetime
   header = header.replace(`{{ date }}`, (new Date()).toLocaleString('en-US'));
 
-  await fs.writeFile("./result/ReadMe.md", `${header}${bodyResult}`);
+  await fs.mkdir("./result", { recursive: true });
+  await fs.writeFile("./result/ReadMe.md", `${header}${rows.map(r => `
+${r}`).join("")}`);
+}
+
+async function process_problem(p, body, { submissionQuery, submissionDetailQuery }, failed) {
+  const problemObject = {
+    id: p.frontendQuestionId,
+    title: p.title,
+    url: `https://leetcode.com/problems/${p.titleSlug}`,
+    acRate: p.acRate.toFixed(1),
+    difficulty: `<img src="https://img.shields.io/badge/${difficulty[p.difficulty]}" />`,
+  }
+  problemObject.tags = p.topicTags.map(tag => `[${tag.name}](https://leetcode.com/tag/${tag.slug})`).join(" &#124; ");
+
+  const id = `${problemObject.id}`.padStart(4, "0");
+  const dir = `./result/ProblemSet/${id}.${p.titleSlug}/`;
+  const link = ({ name, extension }) => `[${name}](ProblemSet/${id}.${p.titleSlug}/${p.titleSlug}.${extension})`;
+  let answers = [];
+
+  try {
+    const existing = FULL ? null : await read_existing_answers(dir, p.titleSlug);
+    if (existing) {
+      answers = existing.map(link);
+    } else {
+      // Submissions come newest first, so the first Accepted one seen per language is the latest.
+      const latest = new Map();
+      let lastKey = null;
+      for (let offset = 0; ; offset += SUBMISSION_PAGE_SIZE) {
+        const list = (await fetch_leetcode(submissionQuery, { offset, limit: SUBMISSION_PAGE_SIZE, lastKey, questionSlug: p.titleSlug })).data.submissionList;
+        for (let s of list.submissions)
+          if (s.statusDisplay == "Accepted" && !latest.has(s.lang))
+            latest.set(s.lang, s);
+        if (!list.hasNext)
+          break;
+        lastKey = list.lastKey;
+      }
+
+      // Known languages first (in table order), then any language not in the table.
+      const langOrder = [...Object.keys(languages).filter(l => latest.has(l)), ...[...latest.keys()].filter(l => !(l in languages))];
+      for (let l of langOrder) {
+        const submission = latest.get(l);
+        const language = languages[l] ?? { name: submission.langName ?? l, extension: `${l}.txt` };
+        const code = await fetch_code(submissionDetailQuery, submission.id);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(`${dir}/${p.titleSlug}.${language.extension}`, code);
+        answers.push(link(language));
+      }
+    }
+  } catch (e) {
+    // Drop the half written folder so the next run crawls this problem again.
+    console.warn(`Failed on ${p.titleSlug}: ${e.message}`);
+    failed.push(p.titleSlug);
+    await fs.rm(dir, { recursive: true, force: true });
+    answers = [];
+  }
+  problemObject.answers = answers.join(" &#124; ");
+
+  let bodyCopy = body;
+  for (let v of bodyVars)
+    bodyCopy = bodyCopy.replaceAll(`{{ ${v} }}`, problemObject[v]);
+  return bodyCopy;
 }
 main();
