@@ -1,5 +1,6 @@
 {
 	"username": "",
 	"csrftoken": "",
-	"LEETCODE_SESSION": ""
+	"LEETCODE_SESSION": "",
+	"outputDir": "./result"
 }

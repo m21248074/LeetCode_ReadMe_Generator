@@ -43,10 +43,12 @@ vim config.json
 {
 	"username": "<Your LeetCode Username>",
 	"csrftoken": "<Your LeetCode CSRF Token>",
-	"LEETCODE_SESSION": "<Your LeetCode Session Code>"
+	"LEETCODE_SESSION": "<Your LeetCode Session Code>",
+	"outputDir": "./result"
 }
 ```
 - `username` correspond to the account on the LeetCode website.
+- `outputDir` (optional, default `./result`) is where `ReadMe.md`, `ProblemList/` and `ProblemSet/` are written. Point it at a local clone of your solution repository (e.g. `../LeetCode_Solution`) to update that repository in place: problems that already have solutions there are skipped, so only new ones are crawled.
 
 ### Step 3. Run the script
 
@@ -69,6 +71,8 @@ git push -u origin main
 ```
 
 The above commands are only needed at the first time, next time you can directly use `git push -f`.
+
+If `outputDir` points at your solution repository, skip this step and just commit and push from that repository.
 
 ## Result
 

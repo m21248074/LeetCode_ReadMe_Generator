@@ -18,6 +18,7 @@ npm start -- --full                 # 完整重抓所有題目
 - 沒有測試、lint 或 build 設定（`npm test` 只是佔位指令）。
 - 必須在專案根目錄執行，因為 `config.json`、`query/`、`template/` 都以相對路徑（`./`）讀取。
 - `config.json` 與 `result/` 已被 `.gitignore` 排除（`config.json` 含登入 cookie，勿提交）。
+- 輸出目錄預設為 `./result`，可用 `config.json` 的選填欄位 `outputDir` 指向別的目錄（例如另一個 solution 倉庫的本機 clone）。所有輸出路徑與增量判斷都以 `outputDir` 為準，啟動時會印出實際使用的絕對路徑。注意：每次執行會**清空並重建 `<outputDir>/ProblemList/`** 並覆寫 `<outputDir>/ReadMe.md`，所以不要指向放有手寫內容的目錄。
 - 要快速測試，可暫時複製一份 `index.js`，在 `problems` 後面加 `.filter(...)` 只處理少數題目；完整爬取上千題會很久。
 
 ## 架構

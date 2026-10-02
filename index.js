@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 
 const LEETCODE_API_ENDPOINT = "https://leetcode.com/graphql";
 const PROBLEM_PAGE_SIZE = 100;
@@ -11,7 +12,7 @@ const ROOT = "@@ROOT@@";
 const MAX_RETRIES = 5;
 // Bursts make LeetCode answer submissionDetails with null, so space out request starts globally.
 const REQUEST_INTERVAL_MS = 500;
-// By default problems whose result folder already has solutions are skipped; pass --full to re-crawl everything.
+// By default problems whose output folder already has solutions are skipped; pass --full to re-crawl everything.
 const FULL = process.argv.includes("--full");
 const LEETCODE_API_SUBMISSION = "https://leetcode.com/submissions/latest/";
 
@@ -139,6 +140,8 @@ const languages = {
 }
 
 let config;
+// Where ReadMe.md, ProblemList/ and ProblemSet/ are written; set by config.outputDir (e.g. a clone of your solution repo).
+let outputDir = "./result";
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -208,6 +211,8 @@ async function read_existing_answers(dir, slug) {
 
 async function main() {
   config = JSON.parse(await fs.readFile("./config.json", { encoding: "utf8" }));
+  outputDir = config.outputDir || outputDir;
+  console.log(`Output directory: ${path.resolve(outputDir)}`);
 
   const userQuery = await fs.readFile("./query/user.graphql", { encoding: "utf8" });
   const problemQuery = await fs.readFile("./query/problem.graphql", { encoding: "utf8" });
@@ -279,9 +284,9 @@ async function main() {
     return `${fromRoot ? "ProblemList/" : ""}${rangeOf(page)}.md`;
   };
 
-  await fs.mkdir("./result", { recursive: true });
-  await fs.rm("./result/ProblemList", { recursive: true, force: true });
-  await fs.mkdir("./result/ProblemList", { recursive: true });
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.rm(path.join(outputDir, "ProblemList"), { recursive: true, force: true });
+  await fs.mkdir(path.join(outputDir, "ProblemList"), { recursive: true });
 
   for (const [n, page] of pageNumbers.entries()) {
     const isFirst = n == 0;
@@ -295,12 +300,12 @@ async function main() {
 
     const table = `${pageHeader.replace("{{ range }}", rangeOf(page))}${list.map(r => `\n${r.row}`).join("")}${pager}`.replaceAll(ROOT, root);
     if (isFirst)
-      await fs.writeFile("./result/ReadMe.md", `${header}\n${table}`);
+      await fs.writeFile(path.join(outputDir, "ReadMe.md"), `${header}\n${table}`);
     else
-      await fs.writeFile(`./result/ProblemList/${rangeOf(page)}.md`, table);
+      await fs.writeFile(path.join(outputDir, "ProblemList", `${rangeOf(page)}.md`), table);
   }
   if (pageNumbers.length == 0)
-    await fs.writeFile("./result/ReadMe.md", header);
+    await fs.writeFile(path.join(outputDir, "ReadMe.md"), header);
 }
 
 async function process_problem(p, body, { submissionQuery, submissionDetailQuery }, failed) {
@@ -314,7 +319,7 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
   problemObject.tags = p.topicTags.map(tag => `[${tag.name}](https://leetcode.com/tag/${tag.slug})`).join(" &#124; ");
 
   const id = `${problemObject.id}`.padStart(4, "0");
-  const dir = `./result/ProblemSet/${id}.${p.titleSlug}/`;
+  const dir = path.join(outputDir, "ProblemSet", `${id}.${p.titleSlug}`);
   const link = ({ name, extension }) => `[${name}](${ROOT}ProblemSet/${id}.${p.titleSlug}/${p.titleSlug}.${extension})`;
   let answers = [];
 
