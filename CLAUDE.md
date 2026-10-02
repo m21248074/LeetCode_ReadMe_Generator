@@ -30,12 +30,13 @@ npm start -- --full                 # 完整重抓所有題目
 
    **限流的坑**：請求太密時 LeetCode 不會回 429，而是對 `submissionDetails` 回 HTTP 200 加 `{"data":{"submissionDetails":null}}`，看起來像「這筆提交取不到」，但稍後單獨請求就取得到。曾以 `REQUEST_INTERVAL_MS = 300`、`CONCURRENCY = 4` 跑，約每 100 題有 10 題以上失敗；目前的 `500`／`3` 完整跑 1474 題零失敗。若又出現大量 `failed to fetch the code of submission`，先調大間隔，不要當成提交本身壞掉。
 3. `user.graphql` 取得各難度的「已解／總題數」，寫入 `config.cur_*` / `config.all_*`（陣列順序依賴 `configVars = solved, easy, medium, hard`），填入 header 模板。
+   **cookie 失效的行為**：使用者資料查詢是公開的，所以不會失敗；但題目清單會回**空陣列**（不是錯誤），提交清單回 `null`。因此 `main()` 在寫入任何檔案前，若題目清單為空而 `cur_solved > 0` 就直接丟錯中止（否則會用 0 題覆寫 `outputDir` 的首頁並清空 `ProblemList/`）。找不到使用者、`config.json` 缺欄位也會在最前面以一行明確訊息中止；頂層錯誤以 `process.exitCode = 1` 結束（不要用 `process.exit()`，Windows 上網路連線未關閉時會觸發 libuv 斷言崩潰）。
 4. `problem.graphql` 以 `filters: { status: "AC" }` 取得所有已解題目。伺服器單次最多回 100 筆，所以用 `skip` 分頁；**頁與頁之間會重疊**，因此依 `questionId` 去重，並以「空頁」而非筆數判斷結束。
 5. 最多 `CONCURRENCY` 題同時由 `process_problem()` 處理（簡易 worker pool），每題回傳 `{ id, row }`，最後依題號每 `PAGE_SIZE`（500）題分頁：**第一頁直接是 `result/ReadMe.md`**（徽章 + 第一頁表格），其餘頁面寫入 `result/ProblemList/0501-1000.md` 等，每頁底部都有分頁器（range 連結 + Prev/Next）。分頁的原因是 GitHub 對過大的 README（約 500 KiB）會截斷，單一 ReadMe 在 1474 題時已達約 630 KiB。每次執行會先清空並重建 `ProblemList/`。
 6. `process_problem()`：
    - **增量**：若 `result/ProblemSet/<4位補零題號>.<titleSlug>/` 已有解答檔就直接用檔案推回連結、不打 API（`--full` 則忽略）。副作用：已抓過的題目之後新增的語言或較新的提交不會被補上，需用 `--full`。
    - 否則用 `submission.graphql` 分頁（`hasNext`/`lastKey`）翻完所有提交，**每種語言只保留最新一筆 Accepted**（提交由新到舊排序，所以第一次看到就是最新）。再用 `submissionDetail.graphql` 取得程式碼（`fetch_code` 回傳 `null` 時重試，超過上限就丟錯）。
-   - 任何錯誤會被捕捉、記入 `failed`，並刪除該題資料夾，使下一次增量執行會重抓。
+   - 任何錯誤會被捕捉並記入 `failed`。若資料夾是這次嘗試才建立的就刪除它，使下一次增量執行會重抓；**本來就存在的資料夾絕不刪除**（`--full` 時失敗仍保留舊內容與舊連結）。
 
 ### 模板機制
 

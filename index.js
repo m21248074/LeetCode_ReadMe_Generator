@@ -212,6 +212,8 @@ async function read_existing_answers(dir, slug) {
 async function main() {
   config = JSON.parse(await fs.readFile("./config.json", { encoding: "utf8" }));
   outputDir = config.outputDir || outputDir;
+  if (!config.username || !config.csrftoken || !config.LEETCODE_SESSION)
+    throw new Error("config.json needs username, csrftoken and LEETCODE_SESSION.");
   console.log(`Output directory: ${path.resolve(outputDir)}`);
 
   const userQuery = await fs.readFile("./query/user.graphql", { encoding: "utf8" });
@@ -220,6 +222,8 @@ async function main() {
   const submissionDetailQuery = await fs.readFile("./query/submissionDetail.graphql", { encoding: "utf8" });
 
   const user = (await fetch_leetcode(userQuery, { username: config.username })).data;
+  if (!user.matchedUser)
+    throw new Error(`LeetCode user "${config.username}" was not found, check username in config.json.`);
   user.submission = user.matchedUser.submitStats.acSubmissionNum;
   for (let [i, v] of configVars.entries()) {
     config[`all_${v}`] = user.allQuestionsCount[i].count;
@@ -244,6 +248,8 @@ async function main() {
       problemMap.set(p.questionId, p);
   }
   const problems = [...problemMap.values()];
+  if (problems.length == 0 && config.cur_solved > 0)
+    throw new Error("Could not list your solved problems. csrftoken / LEETCODE_SESSION in config.json are probably expired, copy fresh values from the leetcode.com cookies in your browser. Nothing was written.");
   if (problems.length != config.cur_solved)
     console.warn(`Warning: expected ${config.cur_solved} problems but fetched ${problems.length}`);
 
@@ -323,6 +329,7 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
   const link = ({ name, extension }) => `[${name}](${ROOT}ProblemSet/${id}.${p.titleSlug}/${p.titleSlug}.${extension})`;
   let answers = [];
 
+  const hadDir = await fs.access(dir).then(() => true, () => false);
   try {
     const existing = FULL ? null : await read_existing_answers(dir, p.titleSlug);
     if (existing) {
@@ -333,6 +340,8 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
       let lastKey = null;
       for (let offset = 0; ; offset += SUBMISSION_PAGE_SIZE) {
         const list = (await fetch_leetcode(submissionQuery, { offset, limit: SUBMISSION_PAGE_SIZE, lastKey, questionSlug: p.titleSlug })).data.submissionList;
+        if (!list.submissions)
+          throw new Error("no submission list returned, the session may have expired");
         for (let s of list.submissions)
           if (s.statusDisplay == "Accepted" && !latest.has(s.lang))
             latest.set(s.lang, s);
@@ -353,11 +362,12 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
       }
     }
   } catch (e) {
-    // Drop the half written folder so the next run crawls this problem again.
     console.warn(`Failed on ${p.titleSlug}: ${e.message}`);
     failed.push(p.titleSlug);
-    await fs.rm(dir, { recursive: true, force: true });
-    answers = [];
+    // Drop a folder created by this attempt so the next run crawls the problem again, but never one that was already there (--full).
+    if (!hadDir)
+      await fs.rm(dir, { recursive: true, force: true });
+    answers = ((await read_existing_answers(dir, p.titleSlug)) ?? []).map(link);
   }
   problemObject.answers = answers.join(" &#124; ");
 
@@ -366,4 +376,7 @@ async function process_problem(p, body, { submissionQuery, submissionDetailQuery
     bodyCopy = bodyCopy.replaceAll(`{{ ${v} }}`, problemObject[v]);
   return { id: parseInt(problemObject.id), row: bodyCopy };
 }
-main();
+main().catch(e => {
+  console.error(`Error: ${e.message}`);
+  process.exitCode = 1;
+});
