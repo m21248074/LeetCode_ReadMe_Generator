@@ -12,6 +12,11 @@ Give me a ⭐ if it is useful, thank you!
 ## Overview
 A tool for crawling the description and accepted submitted code of problems on the [LeetCode](https://leetcode.com/) website. The tool supports to generate ReadMe.md files to beautify your ReadMe of LeetCode repository.
 
+- Downloads the **latest accepted submission of every language** you used for each problem (languages that are not in the built-in table are saved as `<lang>.txt`).
+- **Incremental**: problems that already have solutions in the output folder are skipped, so later runs only crawl new problems.
+- **Paged ReadMe**: the problem table is split into pages of 500 problem ids with a pager at the bottom, because GitHub truncates a ReadMe larger than about 500 KiB.
+- Requests are throttled, since LeetCode starts returning empty results when they come too fast.
+
 This project is inspired by:
 
 - [ZhaoxiZhang / LeetCodeCrawler](https://github.com/ZhaoxiZhang/LeetCodeCrawler)
@@ -22,12 +27,13 @@ This project is inspired by:
 
 ## Quick Start
 
-### Step 1. Clone the repository and Initialize Node.js
+### Step 1. Clone the repository
+
+Node.js 18 or newer is required (it uses the built-in `fetch`). There are no dependencies, so `npm install` is not needed.
 
 ```shell
 git clone https://github.com/m21248074/LeetCode_ReadMe_Generator.git
 cd ./LeetCode_ReadMe_Generator
-npm install
 ```
 
 ### Step 2. Edit the config file
@@ -48,13 +54,18 @@ vim config.json
 }
 ```
 - `username` correspond to the account on the LeetCode website.
+- `csrftoken` and `LEETCODE_SESSION` are the cookies of your logged-in leetcode.com session. Copy them from the browser (DevTools → Application/Storage → Cookies → `https://leetcode.com`). They expire after a while; when the script stops with "Could not list your solved problems", copy fresh values. Never commit `config.json` (it is in `.gitignore`).
 - `outputDir` (optional, default `./result`) is where `ReadMe.md`, `ProblemList/` and `ProblemSet/` are written. Point it at a local clone of your solution repository (e.g. `../LeetCode_Solution`) to update that repository in place: problems that already have solutions there are skipped, so only new ones are crawled.
 
 ### Step 3. Run the script
 
 ```shell
-node index.js
+npm start
 ```
+
+- The first run crawls everything and can take a long time (requests are throttled to avoid being rate limited).
+- Later runs are incremental: problems whose folder already has solutions are skipped. A new submission or a new language of a problem that was already crawled is **not** picked up this way; run `npm start -- --full` to crawl every problem again (or delete that problem's folder).
+- If some problems fail, they are listed at the end and are retried by the next run.
 
 ### Step 4. Push the result to Your Repo
 
@@ -75,5 +86,13 @@ The above commands are only needed at the first time, next time you can directly
 If `outputDir` points at your solution repository, skip this step and just commit and push from that repository.
 
 ## Result
+
+```
+ReadMe.md                  badges, statistics and the first page of the problem table
+ProblemList/0501-1000.md   the other pages of the problem table (500 problem ids each)
+ProblemSet/0001.two-sum/   the solutions of one problem, one file per language
+```
+
+`ProblemList/` is rebuilt and `ReadMe.md` is overwritten on every run, so do not put hand written content there. The page size is `PAGE_SIZE` in `index.js`.
 
 You can see the result for crawling in my repository：[LeetCode Solution](https://github.com/m21248074/LeetCode_Solution).
